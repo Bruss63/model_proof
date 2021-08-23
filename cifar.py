@@ -8,7 +8,6 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import random_split
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import ToTensor
-from torchvision.utils import make_grid
 
 
 def main():
