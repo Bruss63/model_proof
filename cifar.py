@@ -1,3 +1,5 @@
+import time
+
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -15,10 +17,12 @@ def main():
     torch.multiprocessing.freeze_support()
 
     # Import CIFAR-10 dataset
+    print('Importing data')
     dataset = CIFAR10(root='data/', download=True, transform=ToTensor())
     test_dataset = CIFAR10(root='data/', train=False, transform=ToTensor())
 
     # Prepare for training
+    print('Preparing data')
     validation_size = 5000
     train_size = len(dataset) - validation_size
     train_dataset, validation_dataset = random_split(
@@ -37,19 +41,24 @@ def main():
     )
 
     # Generate Model
+    print('Generating model')
+    device = get_default_device()
+
     input_size = 3*32*32
     output_size = 10
-    model = CIFAR10Model(input_size=input_size, hidden_size=1028,
-                         output_size=output_size)
+    model = to_device(CIFAR10Model(input_size=input_size, hidden_size=1028,
+                                   output_size=output_size), device)
 
     # Train Model
     epochs = 15
+    print(f'Training model for {epochs} epoch(s)')
     history = [evaluate(model, validation_loader)]
     history += fit(epochs, 0.1, model, train_loader, validation_loader)
     plot_accuracies(history)
     plot_losses(history)
 
     # Evaluate model
+    print('Evaluating Model')
     results = evaluate(model, test_loader)
     print(results)
 
@@ -76,8 +85,7 @@ class ImageClassifierBase(nn.Module):
         return {'validation_loss': epoch_loss.item(), 'validation_accuracy': epoch_acc.item()}
 
     def epoch_end(self, epoch, result):
-        print("Epoch [{}], validation_loss: {:.4f}, validation_accuracy: {:.4f}".format(
-            epoch, result['validation_loss'], result['validation_accuracy']))
+        print(f"Epoch [{epoch}], validation_loss: { result['validation_loss']:.4f}, validation_accuracy: {result['validation_accuracy']:.4f}, time_taken: {result['time_taken']:.4f}s")
 
 
 class CIFAR10Model(ImageClassifierBase):
@@ -125,6 +133,7 @@ def fit(epochs, lr, model, train_loader, validation_loader, opt_func=torch.optim
     history = []
     optimizer = opt_func(model.parameters(), lr)
     for epoch in range(epochs):
+        start = time.time()
         # Training Phase
         for batch in train_loader:
             loss = model.training_step(batch)
@@ -133,6 +142,8 @@ def fit(epochs, lr, model, train_loader, validation_loader, opt_func=torch.optim
             optimizer.zero_grad()
         # Validation phase
         result = evaluate(model, validation_loader)
+        end = time.time()
+        result['time_taken'] = end - start
         model.epoch_end(epoch, result)
         history.append(result)
     return history
@@ -156,6 +167,38 @@ def plot_accuracies(history):
     plt.show()
 
 
-# === Entrypoint ===
+def get_default_device():
+    if torch.cuda.is_available():
+        print("Running on GPU")
+        return torch.device('cuda')
+    else:
+        print("Running on CPU")
+        return torch.device('cpu')
+
+
+def to_device(data, device):
+    """Move tensor(s) to chosen device"""
+    if isinstance(data, (list, tuple)):
+        return [to_device(x, device) for x in data]
+    return data.to(device, non_blocking=True)
+
+
+class DeviceDataLoader():
+    """Wrap a dataloader to move data to a device"""
+
+    def __init__(self, dl, device):
+        self.dl = dl
+        self.device = device
+
+    def __iter__(self):
+        """Yield a batch of data after moving it to device"""
+        for b in self.dl:
+            yield to_device(b, self.device)
+
+    def __len__(self):
+        """Number of batches"""
+        return len(self.dl)
+
+    # === Entrypoint ===
 if __name__ == '__main__':
     main()
