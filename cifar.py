@@ -1,3 +1,4 @@
+import os
 import time
 
 import matplotlib.pyplot as plt
@@ -7,7 +8,8 @@ import torch.nn.functional as functional
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import random_split
 from torchvision.datasets import CIFAR10
-from torchvision.transforms import ToTensor
+from torchvision.transforms import Compose, Normalize, ToTensor
+from tqdm import tqdm
 
 
 def main():
@@ -17,8 +19,21 @@ def main():
 
     # Import CIFAR-10 dataset
     print('Importing data')
-    dataset = CIFAR10(root='data/', download=True, transform=ToTensor())
-    test_dataset = CIFAR10(root='data/', train=False, transform=ToTensor())
+    dataset = CIFAR10(
+        root='data/', download=True, transform=Compose(
+            [ToTensor(), Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616])]
+        )
+    )
+    test_dataset = CIFAR10(
+        root='data/', train=False, transform=Compose(
+            [ToTensor(), Normalize([0.4942, 0.4851, 0.4504], [0.2467, 0.2429, 0.2616])]
+        )
+    )
+
+    # mean, std = img_mean_std(dataset)
+    # print(mean, std)
+    # test_mean, test_std = img_mean_std(test_dataset)
+    # print(test_mean, test_std)
 
     # Prepare for training
     print('Preparing data')
@@ -28,7 +43,6 @@ def main():
         dataset, [train_size, validation_size])
 
     batch_size = 128
-
     train_loader = DataLoader(
         train_dataset, batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
@@ -41,13 +55,9 @@ def main():
 
     # Generate Model
     print('Generating model')
-    device = get_default_device()
-
-    input_size = 3*32*32
-    output_size = 10
-    model = to_device(CIFAR10Model(input_size=input_size, hidden_size=1028,
-                                   output_size=output_size), device)
-
+    # device = get_default_device()
+    # model = to_device(CIFAR10Model(), device)
+    model = torch.load('./models/model_1')
     # Train Model
     epochs = 15
     print(f'Training model for {epochs} epoch(s)')
@@ -60,6 +70,16 @@ def main():
     print('Evaluating Model')
     results = evaluate(model, test_loader)
     print(results)
+
+    # Saving model
+    if ~os.path.exists('./models'):
+        os.mkdir('./models')
+
+    model_num = 1
+    while os.path.exists(f'./models/model_{model_num}'):
+        model_num += 1
+
+    torch.save(model, f'./models/model_{model_num}')
 
 
 class ImageClassifierBase(nn.Module):
@@ -88,34 +108,44 @@ class ImageClassifierBase(nn.Module):
 
 
 class CIFAR10Model(ImageClassifierBase):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self):
         super().__init__()
-        self.linear1 = nn.Linear(input_size, hidden_size)
-        self.linear2 = nn.Linear(hidden_size, 512)
-        self.linear3 = nn.Linear(512, 256)
-        self.linear4 = nn.Linear(256, 128)
-        self.linear5 = nn.Linear(128, 64)
-        self.linear6 = nn.Linear(64, output_size)
+        self.kernel = 5
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv1 = nn.Conv2d(3, 6, self.kernel)
+        self.conv2 = nn.Conv2d(6, 16, self.kernel)
 
-    def forward(self, xb):
-        # Flatten images into vectors
-        out = xb.view(xb.size(0), -1)
-        # Apply layers & activation functions
-        out = self.linear1(out)
-        out = functional.relu(out)
-        out = self.linear2(out)
-        out = functional.relu(out)
-        out = self.linear3(out)
-        out = functional.relu(out)
-        out = self.linear4(out)
-        out = functional.relu(out)
-        out = self.linear5(out)
-        out = functional.relu(out)
-        out = self.linear6(out)
-        out = functional.relu(out)
-        return out
+        self.linear1 = nn.Linear(16 * self.kernel * self.kernel, 120)
+        self.linear2 = nn.Linear(120, 84)
+        self.linear3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        x = self.pool(functional.relu(self.conv1(x)))
+        x = self.pool(functional.relu(self.conv2(x)))
+        x = torch.flatten(x, 1)
+        x = functional.relu(self.linear1(x))
+        x = functional.relu(self.linear2(x))
+        x = self.linear3(x)
+
+        return x
 
  # === Helpers ====
+
+
+def img_mean_std(dataset):
+    psum = torch.tensor([0., 0., 0.])
+    psum_sq = torch.tensor([0., 0., 0.])
+
+    for data, _ in dataset:
+        psum += data.sum(dim=[1, 2])
+        psum_sq += (data ** 2).sum(dim=[1, 2])
+
+    total_pixels = len(dataset) * 32 * 32
+
+    mean = psum / total_pixels
+    std = torch.sqrt((psum_sq / total_pixels) - (mean ** 2))
+
+    return mean, std
 
 
 def accuracy(outputs, labels):
@@ -124,7 +154,9 @@ def accuracy(outputs, labels):
 
 
 def evaluate(model, validation_loader):
-    outputs = [model.validation_step(batch) for batch in validation_loader]
+    print('Evaluating')
+    outputs = [model.validation_step(batch)
+               for batch in tqdm(validation_loader)]
     return model.validation_epoch_end(outputs)
 
 
@@ -134,7 +166,9 @@ def fit(epochs, lr, model, train_loader, validation_loader, opt_func=torch.optim
     for epoch in range(epochs):
         start = time.time()
         # Training Phase
-        for batch in train_loader:
+        print(f'Epoch [{epoch}]')
+        print('Training')
+        for batch in tqdm(train_loader):
             loss = model.training_step(batch)
             loss.backward()
             optimizer.step()
